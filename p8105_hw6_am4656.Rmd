@@ -62,6 +62,7 @@ problem_1_estimate_plot2 =
 
 (problem_1_estimate_plot1 + problem_1_estimate_plot2) + plot_annotation(title = "Figure 1. Distribution of r-squared and log(intercept*b1)")
 ```
+
 Values of both of these estimates appear to be normally distributed in this 5000-fold bootstrapped sample.
 
 ```{r confidence interval, include = TRUE, message = FALSE, echo = FALSE, warning = FALSE}
@@ -202,13 +203,7 @@ birthwt_data %>%
 
 
 ## Hypothetical Model
-Hypothetically, predictors which may lead to or be protective against low birth weight include:
-* family monthly income (`fincome`)
-* gestational age in weeks (`gaweeks`)
-* presence of malformations that could affect weight (`malform`)
-* mother's age at delivery (`momage`)
-* mother's pre-pregnancy BMI (`ppbmi`)
-* average number of cigarettes smoked per day during pregnancy (`smoken`)
+Hypothetically, predictors which may lead to or be protective against low birth weight include: family monthly income (`fincome`), gestational age in weeks (`gaweeks`), presence of malformations that could affect weight (`malform`), mother's age at delivery (`momage`), mother's pre-pregnancy BMI (`ppbmi`), average number of cigarettes smoked per day during pregnancy (`smoken`).
 
 These are explored with a logistic regression model.
 
