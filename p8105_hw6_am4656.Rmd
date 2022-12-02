@@ -1,0 +1,304 @@
+---
+title: "P8105 HW6: am4656"
+author: "Aaron Mittel"
+date: "2022-12-01"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE,
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%")
+
+library(tidyverse)
+library(patchwork)
+library(modelr)
+library(mgcv)
+```
+
+# Problem 1
+```{r weather data import, include = TRUE, echo = FALSE, message = FALSE}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+The density plots below indicates the distribution of 5000-fold bootstrapped sample r-squared and the log of the quantity intercept*slope of `tmin` within a simple linear regression estimating the influence of `tmin` on `tmax`.
+```{r boostrapping estimates, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+problem_1_estimates = 
+weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x)),
+    model_results = map(models, broom::glance),
+    model_estimates = map(models, broom::tidy)) %>% 
+  select(model_results, model_estimates) %>% 
+  unnest(model_results, model_estimates) %>% 
+  select(r.squared, term, estimate) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate) %>%
+  rename(intercept = "(Intercept)") %>% 
+  mutate(
+    log_int_b1 = log(intercept*tmin)) %>% 
+  select(-intercept, -tmin)
+
+problem_1_estimate_plot1 = 
+  problem_1_estimates %>% 
+  ggplot(aes(x = r.squared)) + geom_density()
+
+problem_1_estimate_plot2 = 
+  problem_1_estimates %>% 
+  ggplot(aes(x = log_int_b1)) + geom_density()
+
+(problem_1_estimate_plot1 + problem_1_estimate_plot2) + plot_annotation(title = "Figure 1. Distribution of r-squared and log(intercept*b1)")
+```
+Values of both of these estimates appear to be normally distributed in this 5000-fold bootstrapped sample.
+
+```{r confidence interval, include = TRUE, message = FALSE, echo = FALSE, warning = FALSE}
+problem_1_estimates %>% 
+  summarize(
+    ci_lower_r.squared = quantile(r.squared, 0.025),
+    ci_upper_r.squared = quantile(r.squared, 0.975),
+    ci_lower_log_int_b1 = quantile(log_int_b1, 0.025),
+    ci_upper_log_int_b1 = quantile(log_int_b1, 0.975)
+  ) %>% 
+  knitr::kable(digits = 3)
+```
+* The 95% confidence interval of r-squared for this sample is (0.894, 0.927).
+* The 95% confidence interval of ln(intercept * beta1) is (1.966, 2.059).
+* These values are reflected in the plots above.
+
+
+
+# Problem 2
+This problem examines data gathered by the _Washington Post_ pertaining to homicides in 50 large U.S. cities.
+
+```{r creating homicide dataframe, message = FALSE, include = FALSE, echo = FALSE, warning = FALSE}
+homicide_data = 
+  read_csv("./data/homicide-data.csv") %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    city_state = str_c(city, ", ", state)) %>% 
+  filter(
+    city_state != "Dallas, TX",
+    city_state != "Phoenix, AZ",
+    city_state != "Kansas City, MO",
+    city_state != "Tulsa, AL",
+    victim_race %in% c("White","Black"),
+    disposition == "Closed by arrest" | disposition == "Open/No arrest" | disposition == "Closed without arrest") %>% 
+  mutate( 
+    victim_age = as.numeric(victim_age),
+    resolved = as.numeric(disposition %in% c("Closed by arrest","Closed without arrest"))) %>% 
+  drop_na()
+
+homicide_data
+```
+_Entries with missing data have been removed._
+
+
+## Baltimore, MD
+
+In the city of Baltimore, MD, we can use logistic regression to estimate the influence of victims' age, gender (male vs female), and race (white vs black) on the probability of a homicide being closed. 
+```{r baltimore logistic, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+baltimore_df = 
+  homicide_data %>% 
+  filter(
+    city_state == "Baltimore, MD"
+  )
+
+baltimore_logistic = 
+  baltimore_df %>% 
+  glm(resolved ~ victim_age + victim_sex + victim_race, data = ., family = binomial())
+
+baltimore_logistic %>% 
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>% 
+  knitr::kable(digits = 3)
+```
+The odds of solving homicides for male victims are **0.355 times (95% CI: 0.267, 0.468)** the odds of solving homicides for female victims in Baltimore, MD, keeping all other variables fixed, at a 5% level of significance.
+
+
+## All remaining cities in _Washington Post_ dataset.
+
+The plot below demonstrates the odds of homicide case closure (closed by arrest or closed without arrest) in several major cities in the United States. The error bar indicates the upper and lower bounds of the 95% confidence interval for each estimated odds ratio.
+
+```{r all cities, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+nationwide_df_nest = 
+  homicide_data %>% 
+  group_by(city_state) %>% 
+  relocate(city_state) %>% 
+  nest(data = uid:resolved)
+
+nationwide_results = 
+  nationwide_df_nest %>%
+  mutate(
+    models = map(data, ~glm(resolved ~ victim_age + victim_sex + victim_race, data = ., family = binomial())),
+    results = map(models, broom::tidy, exponentiate = TRUE, conf.int = TRUE)) %>% 
+  unnest(results) %>% 
+  select(-data, -models) %>% 
+  filter(term == "victim_sexMale")
+
+nationwide_plot = 
+  nationwide_results %>% 
+  ungroup() %>% 
+  mutate(city_state = fct_reorder(city_state, estimate)) %>% 
+  ggplot(aes(x = city_state, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
+  theme_minimal() +
+  labs(
+    title = "Figure 2. Odds of Homicide Case Closure Comparing Males to Female by City in United States",
+    x = "City and State",
+    y = "Odds Ratio"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+nationwide_plot
+```
+
+In general, homicides of male victims have lower odds of case closure than those of female victims. Exceptions in this data include Fresno, CA, Stockon, CA, and Minneapolis, MN, in which male and female victim's case closure odds are comparable. However, the confidence interval of these 3 cities' estimates are relatively wide compared to the rest of the cities in the dataset.
+
+
+
+# Problem 3
+This problem uses data from a dataset of 4000 infants and evaluates predictors of low birthweight. Several predictors, `babysex`, `frace`, `malform`, and `mrace` are labeled as numeric entries in the original data and have been mutated into categorical/factor variables for further analysis. There is not a substantial amount of missing data though `pnumlbw` and `pnumsga` are "0" across all entries.
+
+```{r birthweight data import, include = FALSE, echo = FALSE, message = FALSE, warning = FALSE}
+birthwt_data = 
+  read_csv("./data/birthweight.csv") %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    babysex = as.factor(babysex),
+    frace = as.factor(frace),
+    malform = as.factor(malform),
+    mrace = as.factor(mrace),
+    low_birth_wt = case_when(
+      bwt < 2500 ~ 1,
+      bwt >= 2500 ~ 0
+    )
+  )
+
+skimr::skim(birthwt_data)
+```
+
+Low birth weight is defined as a birth weight less than 2500 grams according to the World Health Organization (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5710991/#b0005). Thus, we will mutate the dataframe to create a binary outcome of `low_birth_wt` = 1 if birth weight is < 2500 g and = 0 if birth weight is greater than or equal to 2500 g.
+```{r birth weight categorical, include = TRUE, echo = FALSE, warning = FALSE, message = FALSE}
+birthwt_data %>% 
+  group_by(low_birth_wt) %>% 
+  summarize(
+    count = n()
+  ) %>%
+  knitr::kable()
+```
+
+
+## Hypothetical Model
+Hypothetically, predictors which may lead to or be protective against low birth weight include:
+* family monthly income (`fincome`)
+* gestational age in weeks (`gaweeks`)
+* presence of malformations that could affect weight (`malform`)
+* mother's age at delivery (`momage`)
+* mother's pre-pregnancy BMI (`ppbmi`)
+* average number of cigarettes smoked per day during pregnancy (`smoken`)
+
+These are explored with a logistic regression model.
+
+```{r hypothetical glm, include = TRUE, message = FALSE, echo = FALSE, warning = FALSE}
+hypothetical_low_birth_wt_model = 
+  birthwt_data %>% 
+  glm(low_birth_wt ~ fincome + gaweeks + malform + momage + ppbmi + smoken, data = ., family = binomial())
+
+hypothetical_low_birth_wt_model %>%
+  broom::tidy(expoentiate = TRUE, conf.int = TRUE) %>% 
+  knitr::kable(digits = 2)
+
+birthwt_data %>% 
+  modelr::add_residuals(hypothetical_low_birth_wt_model) %>% 
+  modelr::add_predictions(hypothetical_low_birth_wt_model) %>% 
+  mutate(
+    fitted_prob = boot::inv.logit(pred)
+  ) %>% 
+  ggplot(aes(x = fitted_prob, y = resid)) +
+  geom_point() + 
+  labs(
+    title = "Figure 3. Plot of Residuals vs Fitted Values",
+    x = "Fitted Probability",
+    y = "Residual"
+  )
+```
+
+There are some obvious issues with this model which warrant further investigation.
+
+We can compare this hypothetical model to others which may be superior.
+
+
+## Comparison Models
+The first comparison model uses length at birth (`blength`) and gestational age (`gaweeks`) as predictors.
+```{r test_model_1, include = TRUE, echo = FALSE, warning = FALSE, message = FALSE}
+test_model_1 = 
+  birthwt_data %>% 
+  glm(low_birth_wt ~ blength + gaweeks, data = ., family = binomial())
+
+test_model_1 %>% 
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>% 
+  knitr::kable(digits = 2)
+```
+
+
+The second comparison model uses head circumference (`bhead`), length (`blength`), sex (`babysex`), and interactions between these variables as predictors.
+```{r test_model_2, include = TRUE, message = FALSE, warning = FALSE, echo = FALSE}
+test_model_2 = 
+  birthwt_data %>% 
+  glm(low_birth_wt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = ., family = binomial())
+
+test_model_2 %>% 
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>% 
+  knitr::kable(digits = 2)
+```
+
+### Cross-Validation of Models
+
+```{r cross validation, include = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+cross_validation_df = 
+  crossv_mc(birthwt_data, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  ) %>% 
+  mutate(
+    hypothetical_model = map(train, ~glm(low_birth_wt ~ fincome + gaweeks + malform + momage + ppbmi + smoken, data = ., family = binomial())),
+    test_model_1 = map(train, ~glm(low_birth_wt ~ blength + gaweeks, data = ., family = binomial())),
+    test_model_2 = map(train, ~glm(low_birth_wt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = ., family = binomial()))) %>% 
+  mutate(
+    rmse_hypothetic_model = map2_dbl(hypothetical_model, test, ~rmse(model = .x, data = .y)),
+    rmse_test_model_1 = map2_dbl(test_model_1, test, ~rmse(model = .x, data = .y)),
+    rmse_test_model_2 = map2_dbl(test_model_2, test, ~rmse(model = .x, data = .y)))
+
+cross_validation_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix ="rmse_") %>% 
+  mutate(
+    model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin() +
+  labs(
+    title = "Figure 4. RMSE for 3 logistic regression models estimating influence of selected prediction factors on low birth weight of infants",
+    x = "Model",
+    y = "RMSE"
+  )
+```
+
+The hypothetical model has a substantially lower RMSE than that of the other tested models with respect to accuracy of predicting low birth weight among this data.
